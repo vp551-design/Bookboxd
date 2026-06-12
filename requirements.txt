@@ -1,0 +1,6 @@
+streamlit
+pandas
+numpy<2.0
+scikit-surprise
+google-genai
+plotly
