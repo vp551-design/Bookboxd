@@ -22,7 +22,7 @@ except ModuleNotFoundError:
     PLOTLY_AVAILABLE = False
 
 try:
-    from surprise import BaselineOnly, Dataset, KNNBasic, Reader
+    from surprise import BaselineOnly, Dataset, KNNBasic, Reader, SVD
     SURPRISE_AVAILABLE = True
 except ModuleNotFoundError:
     SURPRISE_AVAILABLE = False
@@ -1934,11 +1934,19 @@ def fit_cf_model(model_choice):
             sim_options={"name": "pearson", "user_based": True},
             verbose=False,
         )
-    else:
+    elif model_choice == "Item-Based CF":
         model = KNNBasic(
             k=50,
-            sim_options={"name": "cosine", "user_based": False},
+            sim_options={"name": "pearson", "user_based": False},
             verbose=False,
+        )
+    else:
+        model = SVD(
+            n_factors=50,
+            n_epochs=20,
+            lr_all=0.005,
+            reg_all=0.05,
+            random_state=6604,
         )
 
     model.fit(trainset)
@@ -2009,6 +2017,10 @@ def fallback_predict(
         # Item-style demo logic: books get a boost when their titles/series words
         # overlap with books this reader rated highly.
         score = (0.70 * book_component) + (0.10 * user_avg) + title_boost
+    elif model_choice == "SVD":
+        # SVD-style demo logic: blend user tendency and item quality, with small
+        # author/title affinities standing in for latent preference factors.
+        score = (0.58 * book_component) + (0.22 * user_avg) + (0.10 * author_boost) + (0.10 * title_boost)
     else:
         # User-style demo logic: books get a boost when the reader previously
         # liked the same authors.
@@ -2176,40 +2188,43 @@ def dataset_overview():
 
 @st.cache_data
 def model_comparison_table():
-    """Show official metrics when Surprise is available; otherwise explain the blocker."""
-    if not SURPRISE_AVAILABLE:
-        return pd.DataFrame([
-            {
-                "Model": "Baseline",
-                "RMSE": "Requires scikit-surprise",
-                "Precision@10": "Requires scikit-surprise",
-                "Recall@10": "Requires scikit-surprise",
-                "Status": "Run official notebook in Python 3.11/3.12",
-            },
-            {
-                "Model": "User-Based CF",
-                "RMSE": "Requires scikit-surprise",
-                "Precision@10": "Requires scikit-surprise",
-                "Recall@10": "Requires scikit-surprise",
-                "Status": "Run official notebook in Python 3.11/3.12",
-            },
-            {
-                "Model": "Item-Based CF",
-                "RMSE": "Requires scikit-surprise",
-                "Precision@10": "Requires scikit-surprise",
-                "Recall@10": "Requires scikit-surprise",
-                "Status": "Run official notebook in Python 3.11/3.12",
-            },
-        ])
-
+    """Return the final notebook metrics used to justify the app model."""
     return pd.DataFrame([
         {
-            "Model": "See Project2_Goodreads_Code.ipynb",
-            "RMSE": "Calculated in notebook",
-            "Precision@10": "Calculated in notebook",
-            "Recall@10": "Calculated in notebook",
-            "Status": "Official Surprise evaluation available",
-        }
+            "Model": "UBCF Pearson k=50",
+            "RMSE": 1.0268,
+            "Precision@10": 0.6598,
+            "Recall@10": 0.7939,
+            "Status": "Selected for app - best Top-10 quality",
+        },
+        {
+            "Model": "UBCF Pearson k=20",
+            "RMSE": 1.0290,
+            "Precision@10": 0.6594,
+            "Recall@10": 0.7938,
+            "Status": "Very close user-based alternative",
+        },
+        {
+            "Model": "Popularity Baseline",
+            "RMSE": 0.8423,
+            "Precision@10": 0.6568,
+            "Recall@10": 0.7912,
+            "Status": "Best RMSE benchmark",
+        },
+        {
+            "Model": "SVD 50 factors, reg=0.05",
+            "RMSE": 0.8428,
+            "Precision@10": 0.6565,
+            "Recall@10": 0.7910,
+            "Status": "Strong matrix-factorization benchmark",
+        },
+        {
+            "Model": "IBCF Pearson k=50",
+            "RMSE": 0.8642,
+            "Precision@10": 0.6490,
+            "Recall@10": 0.7805,
+            "Status": "Best item-based CF model",
+        },
     ])
 
 
@@ -2657,6 +2672,11 @@ def render_sidebar_model_guide(selected_model):
             "Find books similar to books you already liked.",
             "You loved Harry Potter. Many people who liked Harry Potter also liked Percy Jackson. Recommend Percy Jackson.",
         ),
+        "SVD": (
+            "SVD Matrix Factorization",
+            "Learn hidden reader and book patterns from the rating matrix.",
+            "If the model learns you enjoy complex fantasy and another book has similar latent taste signals, SVD can recommend it even without exact author or title overlap.",
+        ),
     }
     heading, idea, example = blocks[selected_model]
     html_block = (
@@ -2685,6 +2705,10 @@ MODEL_EXPLANATIONS = {
     "Item-Based CF": (
         "Item-Based Collaborative Filtering",
         "Find books similar to books you already liked.",
+    ),
+    "SVD": (
+        "SVD Matrix Factorization",
+        "Learn hidden reader and book patterns from the rating matrix.",
     ),
 }
 
@@ -2832,8 +2856,9 @@ MODEL_DROPDOWN_LABELS = {
     "Baseline": "1. Simple Baseline",
     "User-Based CF": "2. User-Based CF",
     "Item-Based CF": "3. Item-Based CF",
+    "SVD": "4. SVD Matrix Factorization",
 }
-MODEL_DROPDOWN_ORDER = ["Baseline", "User-Based CF", "Item-Based CF"]
+MODEL_DROPDOWN_ORDER = ["Baseline", "User-Based CF", "Item-Based CF", "SVD"]
 
 if active_page in controls_pages:
     with st.sidebar:
@@ -3426,7 +3451,7 @@ if active_page == "Preference Search":
                 "based on your reading preference."
             )
 
-    model_names = ["Baseline", "User-Based CF", "Item-Based CF"]
+    model_names = ["Baseline", "User-Based CF", "Item-Based CF", "SVD"]
     model_candidate_sets = {}
     for search_model_name in model_names:
         search_model = fit_cf_model(search_model_name)
@@ -3453,6 +3478,7 @@ if active_page == "Preference Search":
         "Baseline": "Recommends broadly liked books that match the selected preference.",
         "User-Based CF": "Starts from readers similar to the selected user, then matches the preference.",
         "Item-Based CF": "Starts from books similar to the user's history, then matches the preference.",
+        "SVD": "Uses hidden reader-book patterns from the rating matrix, then matches the preference.",
     }
     for search_model_name, candidates in model_candidate_sets.items():
         with st.container(border=True):
@@ -3563,10 +3589,12 @@ if active_page == "Dataset & Evaluation":
     with d7:
         stat_box("1-5 stars", "Rating scale")
 
-    st.markdown("<div class='section-title'>Model Comparison Status</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>Model Comparison Results</div>", unsafe_allow_html=True)
     st.markdown(
-        "Use the notebook for the official RMSE, Precision@10, and Recall@10 results. "
-        "This app shows the current run status so the demo stays honest."
+        "The final notebook compares RMSE, Precision@10, and Recall@10. "
+        "The Popularity Baseline predicts ratings most accurately by RMSE, but "
+        "**UBCF Pearson k=50** is selected for the app because it has the strongest "
+        "Top-10 recommendation quality."
     )
     st.dataframe(model_comparison_table(), use_container_width=True, hide_index=True)
 
@@ -3644,6 +3672,11 @@ if active_page == "Model Notes":
         )
     st.markdown(
         """
+        **Final app choice:** UBCF Pearson k=50 is used as the main retrieval model because it had the
+        strongest Top-10 recommendation quality in the final notebook results. The Popularity Baseline had
+        the best RMSE, but the app is built around useful ranked book lists, so Precision@10 and Recall@10
+        matter more for the final model choice.
+
         **Collaborative-filtering step:** the app first creates a candidate list from user-book rating patterns.
 
         **User-Based CF:** recommends books by finding readers with similar rating patterns to the selected user.
@@ -3659,12 +3692,13 @@ if active_page == "Model Notes":
         approach. If the baseline performs very well, that can mean popularity and average ratings are strong signals
         in this dataset.
 
-        **LLM step:** Gemini re-ranks only those candidates using the user's stated preference and book metadata.
+        **SVD:** a matrix-factorization model that learns hidden reader-book patterns. It was competitive on RMSE,
+        but it did not beat UBCF Pearson k=50 on Precision@10 and Recall@10 in the final results.
+
+        **LLM step:** Gemini re-ranks only the books returned by the recommender using the user's stated preference
+        and book metadata. It should explain actual Goodreads candidates, not create new books outside the dataset.
 
         **Design choice:** the minimum-ratings slider reduces unstable recommendations from books with very few ratings.
-
-        **Course alignment:** the notebook provides the formal baseline, user-based CF, item-based CF, RMSE,
-        Precision@10, and Recall@10 comparison. This app is the interactive wrapper for that workflow.
         """
     )
 
